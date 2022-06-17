@@ -1,17 +1,35 @@
+# Personal implementation of the t-SNE algorithm
+
 import numpy as np
 import tensorflow as tf
 from sklearn.metrics.pairwise import euclidean_distances
-
-# To do:
-# - define get_probs()
-# - define get_sigmas() https://towardsdatascience.com/understanding-t-sne-by-implementing-2baf3a987ab3
-
-def get_sigmas():
-    "obtains sigmas by a search"
+from scipy.optimize import minimize_scalar
 
 
-def get_probs():
+def get_perplexity(x):
+    "Compute perplexity"
+    return 2**(-np.sum(x*np.log2(x)))
+
+
+def get_probs(distances, sigmas):
     "obtains probs based on distances and sigmas"
+    n = len(sigmas)
+    probs = np.exp(-distances / (2*np.repeat(sigmas, n).reshape(n, n)))
+
+    probs = probs / np.repeat(np.sum(probs, axis=1), n).reshape(n, n)
+
+    return (probs + probs.transpose()) / (2*n)
+
+
+def get_sigmas(distances, perplexity):
+    "obtains sigmas by a search"
+    n = distances.shape[0]
+    sigmas = np.zeros(shape=n)
+    for i in range(n):
+        func = lambda x: np.abs(get_perplexity(get_probs(distances, np.ones(n)*x*x)[i, :]) - perplexity)
+        sigmas[i] = minimize_scalar(func, bounds=[np.finfo(np.float32).eps, 1000], method='bounded').x
+        print(f'Finding sigmas: {int(np.round(i*100/n))}%')
+    return sigmas
 
 
 class LowDimCoordinates(tf.keras.layers.Layer):
@@ -19,16 +37,18 @@ class LowDimCoordinates(tf.keras.layers.Layer):
         super().__init__()
 
     def build(self, input_shape):
-        self.coordinates = self.add_weight("coordinates", shape=(input_shape, 2), trainable=True)
+        self.coordinates = self.add_weight("coordinates", shape=(input_shape[1], 2), trainable=True)
 
-    def call(self):
+    def call(self, _):
         return self.coordinates
 
 
 @tf.function
 def get_Q(Y):
     "Compute and return Q matrix from Y"
-    probs = 1 / (1 + euclidean_distances(Y, Y, squared=True))
+    R = tf.reshape(tf.reduce_sum(Y*Y, 1), [-1, 1])
+    D = R - 2*tf.matmul(Y, tf.transpose(Y)) + tf.transpose(R)
+    probs = 1 / (1 + D)
 
     return probs / tf.math.reduce_sum(probs)
 
@@ -65,6 +85,6 @@ def t_sne(X, perplexity=30, epochs=1):
 
     t_sne.fit(P, P, batch_size=sample_size, epochs=epochs)
 
-    Y = t_sne()
+    Y = t_sne(P)
 
     return Y
